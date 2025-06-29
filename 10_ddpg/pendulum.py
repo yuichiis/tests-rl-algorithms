@@ -557,4 +557,5 @@ def test_ddpg_agent(actor_net: ActorNetwork,
     print(f"--- Testing Complete. Average Reward: {np.mean(all_rewards):.2f} ---")
 
 # Run test episodes (ensure env is still available)
+env = gym.make('Pendulum-v1', render_mode="human")
 test_ddpg_agent(actor_ddpg, env, num_episodes=3, render=False) # Set render=True if you have display setup

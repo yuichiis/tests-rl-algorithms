@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 import math
+import time
 from collections import namedtuple, deque
 from itertools import count
 from typing import List, Tuple, Dict, Optional
@@ -28,159 +29,7 @@ if torch.cuda.is_available():
 
 # Enable inline plotting for Jupyter Notebook
 #%matplotlib inline
-
-
-
-# Custom Grid World Environment
-class GridEnvironment:
-    """
-    A simple 10x10 Grid World environment.
-    State: (row, col) represented as normalized vector [row/10, col/10].
-    Actions: 0 (up), 1 (down), 2 (left), 3 (right).
-    Rewards: +10 for reaching the goal, -1 for hitting a wall, -0.1 for each step.
-    """
-
-    def __init__(self, rows: int = 10, cols: int = 10) -> None:
-        """
-        Initializes the Grid World environment.
-
-        Parameters:
-        - rows (int): Number of rows in the grid.
-        - cols (int): Number of columns in the grid.
-        """
-        self.rows: int = rows
-        self.cols: int = cols
-        self.start_state: Tuple[int, int] = (0, 0)  # Starting position
-        self.goal_state: Tuple[int, int] = (rows - 1, cols - 1)  # Goal position
-        self.state: Tuple[int, int] = self.start_state  # Current state
-        self.state_dim: int = 2  # State represented by 2 coordinates (row, col)
-        self.action_dim: int = 4  # 4 discrete actions: up, down, left, right
-
-        # Action mapping: maps action index to (row_delta, col_delta)
-        self.action_map: Dict[int, Tuple[int, int]] = {
-            0: (-1, 0),  # Up
-            1: (1, 0),   # Down
-            2: (0, -1),  # Left
-            3: (0, 1)    # Right
-        }
-
-    def reset(self) -> torch.Tensor:
-        """
-        Resets the environment to the start state.
-
-        Returns:
-            torch.Tensor: The initial state as a normalized tensor.
-        """
-        self.state = self.start_state
-        return self._get_state_tensor(self.state)
-
-    def _get_state_tensor(self, state_tuple: Tuple[int, int]) -> torch.Tensor:
-        """
-        Converts a (row, col) tuple to a normalized tensor for the network.
-
-        Parameters:
-        - state_tuple (Tuple[int, int]): The state represented as a tuple (row, col).
-
-        Returns:
-            torch.Tensor: The normalized state as a tensor.
-        """
-        # Normalize coordinates to be between 0 and 1
-        normalized_state: List[float] = [
-            state_tuple[0] / (self.rows - 1),
-            state_tuple[1] / (self.cols - 1)
-        ]
-        return torch.tensor(normalized_state, dtype=torch.float32, device=device)
-
-    def step(self, action: int) -> Tuple[torch.Tensor, float, bool]:
-        """
-        Performs one step in the environment based on the given action.
-
-        Args:
-            action (int): The action to take (0: up, 1: down, 2: left, 3: right).
-
-        Returns:
-            Tuple[torch.Tensor, float, bool]: 
-                - next_state_tensor (torch.Tensor): The next state as a normalized tensor.
-                - reward (float): The reward for the action.
-                - done (bool): Whether the episode has ended.
-        """
-        # If the goal state is already reached, return the current state
-        if self.state == self.goal_state:
-            return self._get_state_tensor(self.state), 0.0, True
-
-        # Get the row and column deltas for the action
-        dr, dc = self.action_map[action]
-        current_row, current_col = self.state
-        next_row, next_col = current_row + dr, current_col + dc
-
-        # Default step cost
-        reward: float = -0.1
-        hit_wall: bool = False
-
-        # Check if the action leads to hitting a wall (out of bounds)
-        if not (0 <= next_row < self.rows and 0 <= next_col < self.cols):
-            # Stay in the same state and incur a penalty
-            next_row, next_col = current_row, current_col
-            reward = -1.0
-            hit_wall = True
-
-        # Update the state
-        self.state = (next_row, next_col)
-        next_state_tensor: torch.Tensor = self._get_state_tensor(self.state)
-
-        # Check if the goal state is reached
-        done: bool = (self.state == self.goal_state)
-        if done:
-            reward = 10.0  # Reward for reaching the goal
-
-        return next_state_tensor, reward, done
-
-    def get_action_space_size(self) -> int:
-        """
-        Returns the size of the action space.
-
-        Returns:
-            int: The number of possible actions (4).
-        """
-        return self.action_dim
-
-    def get_state_dimension(self) -> int:
-        """
-        Returns the dimension of the state representation.
-
-        Returns:
-            int: The number of dimensions in the state (2).
-        """
-        return self.state_dim
     
-
-# Instantiate the custom grid environment with a 10x10 grid
-custom_env = GridEnvironment(rows=10, cols=10)
-
-# Get the size of the action space and state dimension
-n_actions_custom = custom_env.get_action_space_size()
-n_observations_custom = custom_env.get_state_dimension()
-
-# Print basic information about the environment
-print(f"Custom Grid Environment:")
-print(f"Size: {custom_env.rows}x{custom_env.cols}")  # Grid size
-print(f"State Dim: {n_observations_custom}")  # State dimension (2 for row and column)
-print(f"Action Dim: {n_actions_custom}")  # Number of possible actions (4)
-print(f"Start State: {custom_env.start_state}")  # Starting position
-print(f"Goal State: {custom_env.goal_state}")  # Goal position
-
-# Reset the environment and print the normalized state tensor for the start state
-print(f"Example state tensor for (0,0): {custom_env.reset()}")
-
-# Take an example step: move 'right' (action=3) and print the result
-next_s, r, d = custom_env.step(3)  # Action 3 corresponds to moving right
-print(f"Step result (action=right): next_state={next_s.cpu().numpy()}, reward={r}, done={d}")
-
-# Take another example step: move 'up' (action=0) and print the result
-# This should hit a wall since the agent is at the top row
-next_s, r, d = custom_env.step(0)  # Action 0 corresponds to moving up
-print(f"Step result (action=up): next_state={next_s.cpu().numpy()}, reward={r}, done={d}")
-
 
 # Define the Q-Network architecture
 class DQN(nn.Module):
@@ -412,7 +261,7 @@ MAX_STEPS_PER_EPISODE_CUSTOM = 200 # Max steps per episode (grid size related)
 
 
 # Re-instantiate the custom GridEnvironment
-custom_env: GridEnvironment = GridEnvironment(rows=10, cols=10)
+#custom_env: GridEnvironment = GridEnvironment(rows=10, cols=10)
 cart_pole = gym.make("CartPole-v1")
 
 # Get the size of the action space and state dimension
@@ -487,7 +336,7 @@ for i_episode in range(NUM_EPISODES_CUSTOM):
             current_losses.append(loss)
 
         # Break the loop if the episode is done
-        if done:
+        if (done or truncated):
             break
 
     # Store episode statistics
@@ -557,75 +406,75 @@ plt.show()
 
 
 
-# Analyzing the Learned Policy 
-def plot_dqn_policy_grid(policy_net: nn.Module, env: GridEnvironment, device: torch.device) -> None:
+# Analyzing the Learned Policy (Testing)
+def test_dqn_agent(policy_net: DQN, 
+                    env_instance: gym.Env, 
+                    num_episodes: int = 5, 
+                    render: bool = False, # Set to True to visualize
+                    seed_offset: int = 1000) -> None:
     """
-    Plots the greedy policy derived from the DQN for the given environment.
-
+    Tests the trained DDPG agent deterministically.
+    
     Parameters:
-    - policy_net (nn.Module): The trained Q-network used to derive the policy.
-    - env (GridEnvironment): The custom grid environment.
-    - device (torch.device): The device (CPU/GPU) on which the tensors are processed.
-
-    Returns:
-    - None: Displays the policy grid as a plot.
+    - actor_net: The trained actor network.
+    - env_instance: An instance of the environment.
+    - num_episodes: Number of test episodes to run.
+    - render: If True, attempts to render the environment.
+    - seed_offset: Offset for seeding test episodes differently from training.
     """
-    # Get the dimensions of the grid environment
-    rows: int = env.rows
-    cols: int = env.cols
+    if env_instance is None:
+        print("Environment not available for testing.")
+        return
+        
+    policy_net.eval() # Set actor to evaluation mode (important!)
+    
+    print(f"\n--- Testing DDPG Agent ({num_episodes} episodes) ---")
+    all_rewards = []
+    for i in range(num_episodes):
+        state_np, info = env_instance.reset(seed=seed + seed_offset + i) # Different seed for testing
+        state = torch.from_numpy(state_np).float().to(device)
+        episode_reward = 0
+        done = False
+        t = 0
+        while not done:
+            if render:
+                try:
+                    # Try rendering (might require extra setup depending on environment/system)
+                    env_instance.render()
+                    time.sleep(0.01) # Slow down rendering slightly
+                except Exception as e:
+                    print(f"Rendering failed: {e}. Disabling render.")
+                    render = False # Disable rendering if it fails
+            
+            with torch.no_grad():
+                # Select action deterministically (no noise)
+                #action = policy_net(state).cpu().numpy()
+                state_batch = state.unsqueeze(0)
+                action = policy_net(state_batch).max(1)[1].view(1, 1)  # Reshape to [1, 1]
+            
+            # Clipping is still important even in testing
+            #action_clipped = np.clip(action, env_instance.action_space.low, env_instance.action_space.high)
+            action = action.item()
+            
+            next_state_np, reward, terminated, truncated, _ = env_instance.step(action)
+            done = terminated or truncated
+            state = torch.from_numpy(next_state_np).float().to(device)
+            episode_reward += reward
+            t += 1
+        
+        print(f"Test Episode {i+1}: Reward = {episode_reward:.2f}, Length = {t}")
+        all_rewards.append(episode_reward)
+        if render:
+            env_instance.close() # Close the render window
 
-    # Initialize an empty grid to store the policy symbols
-    policy_grid: np.ndarray = np.empty((rows, cols), dtype=str)
+    print(f"--- Testing Complete. Average Reward: {np.mean(all_rewards):.2f} ---")
 
-    # Define symbols for each action
-    action_symbols: Dict[int, str] = {0: '↑', 1: '↓', 2: '←', 3: '→'}
-
-    # Create a figure for the plot
-    fig, ax = plt.subplots(figsize=(cols * 0.6, rows * 0.6))  # Adjust size based on grid dimensions
-
-    # Iterate over each cell in the grid
-    for r in range(rows):
-        for c in range(cols):
-            state_tuple: Tuple[int, int] = (r, c)  # Current state as a tuple
-
-            # If the current cell is the goal state, mark it with 'G'
-            if state_tuple == env.goal_state:
-                policy_grid[r, c] = 'G'
-                ax.text(c, r, 'G', ha='center', va='center', color='green', fontsize=12, weight='bold')
-            else:
-                # Convert the state to a tensor representation
-                state_tensor: torch.Tensor = env._get_state_tensor(state_tuple)
-
-                # Use the policy network to determine the best action
-                with torch.no_grad():
-                    # Add a batch dimension to the state tensor
-                    state_tensor = state_tensor.unsqueeze(0)
-                    # Get Q-values for the current state
-                    q_values: torch.Tensor = policy_net(state_tensor)
-                    # Select the action with the highest Q-value
-                    best_action: int = q_values.max(1)[1].item()
-
-                # Store the action symbol in the policy grid
-                policy_grid[r, c] = action_symbols[best_action]
-                # Add the action symbol to the plot
-                ax.text(c, r, policy_grid[r, c], ha='center', va='center', color='black', fontsize=12)
-
-    # Set up the grid visualization
-    ax.matshow(np.zeros((rows, cols)), cmap='Greys', alpha=0.1)  # Background grid
-    ax.set_xticks(np.arange(-.5, cols, 1), minor=True)
-    ax.set_yticks(np.arange(-.5, rows, 1), minor=True)
-    ax.grid(which='minor', color='black', linestyle='-', linewidth=1)  # Minor grid lines
-    ax.set_xticks([])  # Remove x-axis ticks
-    ax.set_yticks([])  # Remove y-axis ticks
-    ax.set_title("DQN Learned Policy (Custom Grid)")  # Title of the plot
-
-    # Display the plot
-    plt.show()
 
 
 # Plot the policy learned by the trained network
 print("\nPlotting Learned Policy from DQN:")
-plot_dqn_policy_grid(policy_net_custom, custom_env, device)
+cart_pole = gym.make("CartPole-v1", render_mode="human")
+test_dqn_agent(policy_net_custom, cart_pole, num_episodes=3, render=False)
 
 
 
