@@ -2,35 +2,6 @@ import numpy as np
 from maze_env import MazeEnv
 import time
 
-def create_4x4_maze_policy():
-    """
-    簡単な4x4の迷路のポリシー（壁情報）を作成します。
-    S . . .  (S: Start at 0)
-    . # . #
-    . . . #
-    # . . G  (G: Goal at 15)
-    """
-    width, height = 4, 4
-    num_states = width * height
-    # policy[state, action] = Trueなら移動可能
-    # actions: 0:UP, 1:DOWN, 2:RIGHT, 3:LEFT
-    policy = np.zeros((num_states, 4), dtype=bool)
-
-    # 各セルからの移動可能性を定義
-    # (state, allowed_actions)
-    allowed_moves = {
-        0: [1, 2], 1: [2, 3], 2: [1, 3], 3: [1],
-        4: [0, 2], 5: [3], 6: [0, 2], 7: [],
-        8: [1, 2], 9: [1, 2, 3], 10: [0, 3], 11: [],
-        12: [], 13: [0, 2], 14: [0, 2, 3], 15: [3]
-    }
-    
-    for state, actions in allowed_moves.items():
-        for action in actions:
-            policy[state, action] = True
-            
-    return policy, width, height
-
 def create_3x3_maze_policy():
     """
     簡単な3x3の迷路のポリシー（壁情報）を作成します。
