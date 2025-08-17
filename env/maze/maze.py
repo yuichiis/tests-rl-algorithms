@@ -1,5 +1,5 @@
 import numpy as np
-from maze_env import MazeEnv
+from env.maze.maze_env import MazeEnv
 import time
 
 def create_3x3_maze_policy():

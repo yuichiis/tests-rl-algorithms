@@ -5,7 +5,7 @@ import time
 
 # --- この部分は前回の maze_env.py の内容をインポート ---
 # このファイルと同じディレクトリに maze_env.py があることを想定
-from maze_env import MazeEnv 
+from env.maze.maze_env import MazeEnv 
 
 # ----------------------------------------------------
 

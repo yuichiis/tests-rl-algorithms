@@ -6,32 +6,34 @@ import matplotlib.pyplot as plt
 import random
 from typing import List, Tuple, Dict, Optional, Any
 
-# PyTorchのインポート
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from torch.distributions import Categorical
+# TensorFlow関連のライブラリをインポート
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import tensorflow_probability as tfp
 
 # Gymnasiumのインポート
 import gymnasium as gym
 from gymnasium import spaces
 
-# Set up the device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# デバイスの設定 (TensorFlow版)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    device_name = "GPU"
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+else:
+    device_name = "CPU"
+print(f"Using device: {device_name}")
 
-# Set random seed for reproducibility
+# 乱数シードの設定
 seed = 42
 random.seed(seed)
 np.random.seed(seed)
-torch.manual_seed(seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(seed)
+tf.random.set_seed(seed)
 
 # ==============================================================================
-# 1. Gymnasium互換の迷路環境 (MazeEnv) の定義
-#    - このセクションは変更ありません
+# 1. Gymnasium互換の迷路環境 (MazeEnv) の定義 (変更なし)
 # ==============================================================================
 class MazeEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
@@ -74,7 +76,6 @@ class MazeEnv(gym.Env):
     def render(self): pass
     def close(self): pass
 
-
 def create_3x3_maze_policy() -> Tuple[np.ndarray, int, int]:
     width, height = 3, 3
     policy = np.zeros((width * height, 4), dtype=bool)
@@ -82,51 +83,93 @@ def create_3x3_maze_policy() -> Tuple[np.ndarray, int, int]:
     for state, actions in allowed_moves.items(): policy[state, actions] = True
     return policy, width, height
 
+# 登録時に `__main__` を指定しているため、スクリプトとして実行する必要がある
 gym.register(id='Maze-v0', entry_point='__main__:MazeEnv')
 
 # ==============================================================================
-# 2. ヘルパー関数とコア機能 (変更なし)
+# 2. ヘルパー関数とコア機能 (TensorFlow版)
 # ==============================================================================
-def valid_actions_to_mask(valid_actions: List[int], n_actions: int) -> torch.Tensor:
-    mask = torch.zeros(n_actions, dtype=torch.bool, device=device)
-    if valid_actions: mask[valid_actions] = True
-    return mask
+def valid_actions_to_mask(valid_actions: List[int], n_actions: int) -> tf.Tensor:
+    """有効な行動のリストからTensorFlowのブールマスクを作成"""
+    if not valid_actions:
+        return tf.zeros(n_actions, dtype=tf.bool)
+    mask = tf.reduce_sum(tf.one_hot(valid_actions, depth=n_actions), axis=0)
+    return tf.cast(mask, tf.bool)
 
-class PolicyNetwork(nn.Module):
+class PolicyNetwork(keras.Model):
+    """KerasのModelを継承した方策ネットワーク"""
     def __init__(self, n_observations: int, n_actions: int):
         super(PolicyNetwork, self).__init__()
-        self.layer1 = nn.Linear(n_observations, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, n_actions)
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = F.relu(self.layer1(x))
-        x = F.relu(self.layer2(x))
+        self.layer1 = layers.Dense(128, activation='relu')
+        self.layer2 = layers.Dense(128, activation='relu')
+        self.layer3 = layers.Dense(n_actions) # Softmaxは適用しない
+
+    def call(self, x: tf.Tensor, mask: Optional[tf.Tensor] = None) -> tf.Tensor:
+        """softmaxを適用する前のロジットを返す"""
+        x = self.layer1(x)
+        x = self.layer2(x)
         logits = self.layer3(x)
-        if mask is not None: logits = logits.masked_fill(~mask, -1e9)
-        return F.softmax(logits, dim=-1)
+        if mask is not None:
+            mask_float = tf.cast(mask, dtype=tf.float32)
+            if len(mask_float.shape) < len(logits.shape):
+                mask_float = tf.expand_dims(mask_float, 0)
+            logits += (1.0 - mask_float) * -1e9
+        return logits
 
-def select_action_reinforce(state_tensor: torch.Tensor, policy_net: PolicyNetwork, action_mask: torch.Tensor) -> Tuple[int, torch.Tensor]:
-    probs = policy_net(state_tensor, mask=action_mask)
-    m = Categorical(probs)
+def select_action_reinforce(state_tensor: tf.Tensor, policy_net: PolicyNetwork, action_mask: tf.Tensor) -> Tuple[int, tf.Tensor]:
+    """方策に基づいて行動を選択し、その対数確率を返す"""
+    if len(state_tensor.shape) == 1:
+        state_tensor = tf.expand_dims(state_tensor, 0)
+
+    # モデルからlogitsを取得
+    logits = policy_net(state_tensor, mask=action_mask)
+    # TensorFlow ProbabilityのCategorical分布にlogitsを直接渡す
+    m = tfp.distributions.Categorical(logits=logits)
     action = m.sample()
-    return action.item(), m.log_prob(action)
+    # log_probは最適化では使わないが、デバッグ等のために返す
+    log_prob = m.log_prob(action)
+    return action.numpy()[0], log_prob[0]
 
-def calculate_discounted_returns(rewards: List[float], gamma: float, standardize: bool = True) -> torch.Tensor:
+def calculate_discounted_returns(rewards: List[float], gamma: float, standardize: bool = True) -> tf.Tensor:
+    """報酬のリストから割引収益を計算し、任意で標準化する"""
     n = len(rewards)
-    returns = torch.zeros(n, device=device, dtype=torch.float32)
+    returns_np = np.zeros(n, dtype=np.float32)
     discounted_return = 0.0
     for t in reversed(range(n)):
         discounted_return = rewards[t] + gamma * discounted_return
-        returns[t] = discounted_return
-    if standardize: returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        returns_np[t] = discounted_return
+    returns = tf.constant(returns_np, dtype=tf.float32)
+    if standardize:
+        mean = tf.reduce_mean(returns)
+        std = tf.math.reduce_std(returns)
+        returns = (returns - mean) / (std + 1e-8)
     return returns
 
-def optimize_policy(log_probs: List[torch.Tensor], returns: torch.Tensor, optimizer: optim.Optimizer) -> float:
-    loss = -torch.sum(returns * torch.stack(log_probs))
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+def optimize_policy(
+    episode_states: List[tf.Tensor],
+    episode_actions: List[int],
+    episode_action_masks: List[tf.Tensor],
+    returns: tf.Tensor,
+    policy_net: keras.Model,
+    optimizer: keras.optimizers.Optimizer
+) -> float:
+    """勾配テープを使用して方策ネットワークを最適化する"""
+    states_tensor = tf.stack(episode_states)
+    actions_tensor = tf.constant(episode_actions, dtype=tf.int32)
+    masks_tensor = tf.stack(episode_action_masks)
+
+    with tf.GradientTape() as tape:
+        # GradientTapeのコンテキスト内で、モデルからlogitsを取得
+        all_logits = policy_net(states_tensor, mask=masks_tensor)
+        # Categorical分布にlogitsを渡す
+        dist = tfp.distributions.Categorical(logits=all_logits)
+        log_probs = dist.log_prob(actions_tensor)
+        # 損失を計算
+        loss = -tf.reduce_sum(returns * log_probs)
+
+    grads = tape.gradient(loss, policy_net.trainable_variables)
+    optimizer.apply_gradients(zip(grads, policy_net.trainable_variables))
+    return loss.numpy()
 
 # ==============================================================================
 # 4. セットアップとトレーニングループ
@@ -139,28 +182,27 @@ MAX_STEPS_PER_EPISODE_REINFORCE = 50
 STANDARDIZE_RETURNS = True
 GOAL_REWARD = 10.0
 
-# ★★★★★ 変更点 ★★★★★
-# 迷路の構造情報を変数として保持しておく
+# 迷路の構造情報
 maze_policy, maze_width, maze_height = create_3x3_maze_policy()
 exit_position = 8
 
-# gym.makeで環境を生成。ラッパー付きのまま `env` として使用する
+# gym.makeで環境を生成
 env = gym.make(
     'Maze-v0',
     max_episode_steps=MAX_STEPS_PER_EPISODE_REINFORCE,
     policy=maze_policy, width=maze_width, height=maze_height, exit_pos=exit_position,
 )
 
-# 状態空間と行動空間のサイズはラッパー付きのenvからでも安全に取得可能
 n_states = env.observation_space.n
 n_actions = env.action_space.n
-n_observations = n_states # One-Hotエンコーディングのため
+n_observations = n_states
 
 print(f"Gymnasium Maze Environment (One-Hot Input, TimeLimit Wrapper Active):")
 print(f"Total States (NN input dim): {n_observations}, Total Actions: {n_actions}")
 
-policy_net_reinforce = PolicyNetwork(n_observations, n_actions).to(device)
-optimizer_reinforce = optim.Adam(policy_net_reinforce.parameters(), lr=LR_REINFORCE)
+# Kerasのモデルとオプティマイザを初期化
+policy_net_reinforce = PolicyNetwork(n_observations, n_actions)
+optimizer_reinforce = keras.optimizers.Adam(learning_rate=LR_REINFORCE)
 
 episode_rewards_reinforce, episode_lengths_reinforce, episode_losses_reinforce = [], [], []
 
@@ -168,27 +210,40 @@ print("\nStarting REINFORCE Training...")
 
 for i_episode in range(NUM_EPISODES_REINFORCE):
     obs, info = env.reset()
-    episode_log_probs, episode_rewards = [], []
+    # 状態、行動、マスク、報酬を保存するリスト
+    episode_states, episode_actions, episode_action_masks, episode_rewards = [], [], [], []
     terminated, truncated = False, False
 
-    # トレーニングループはラッパー付きのenvをそのまま使用する
-    # これにより、MAX_STEPS_PER_EPISODE_REINFORCEを超えると`truncated`がTrueになる
     while not (terminated or truncated):
-        state_tensor = F.one_hot(torch.tensor(obs, device=device), num_classes=n_states).float()
+        state_tensor = tf.one_hot(tf.constant(obs), depth=n_states, dtype=tf.float32)
         action_mask = valid_actions_to_mask(info['valid_actions'], n_actions)
-        action, log_prob = select_action_reinforce(state_tensor, policy_net_reinforce, action_mask)
-        episode_log_probs.append(log_prob)
+
+        action, _ = select_action_reinforce(state_tensor, policy_net_reinforce, action_mask)
+
+        # エピソードのデータを保存
+        episode_states.append(state_tensor)
+        episode_actions.append(action)
+        episode_action_masks.append(action_mask)
 
         next_obs, reward, terminated, truncated, info = env.step(action)
 
-        if terminated and not truncated: # ゴールした場合のみ
+        if terminated and not truncated:
             reward = GOAL_REWARD
 
         episode_rewards.append(reward)
         obs = next_obs
 
+    # 割引収益を計算
     returns = calculate_discounted_returns(episode_rewards, GAMMA_REINFORCE, STANDARDIZE_RETURNS)
-    loss = optimize_policy(episode_log_probs, returns, optimizer_reinforce)
+    # 方策を最適化
+    loss = optimize_policy(
+        episode_states,
+        episode_actions,
+        episode_action_masks,
+        returns,
+        policy_net_reinforce,
+        optimizer_reinforce
+    )
 
     episode_rewards_reinforce.append(sum(episode_rewards))
     episode_lengths_reinforce.append(len(episode_rewards))
@@ -213,7 +268,6 @@ plt.plot(episode_lengths_reinforce)
 plt.title('Episode Lengths'), plt.xlabel('Episode'), plt.ylabel('Steps'), plt.grid(True)
 plt.tight_layout(), plt.show()
 
-
 # ==============================================================================
 # 6. 可視化関数の修正
 # ==============================================================================
@@ -224,58 +278,38 @@ def plot_policy_on_maze(
     height: int,
     goal_pos: int,
     n_states: int,
-    n_actions: int,
-    device: torch.device
+    n_actions: int
 ) -> None:
-    # 行動の定義: UP = 0, DOWN = 1, RIGHT = 2, LEFT = 3
     action_symbols = {0: '↑', 1: '↓', 2: '→', 3: '←'}
-
     fig, ax = plt.subplots(figsize=(width * 1.2, height * 1.2))
-    
-    # ★★★★★ 根本的な修正 ★★★★★
-    # ax.grid() は使用しない。これにより描画の競合を完全に回避する。
-    # 代わりに、すべての壁を手動で描画する。
-    
-    # プロットの範囲とアスペクト比を設定
     ax.set_xlim(-0.5, width - 0.5)
     ax.set_ylim(-0.5, height - 0.5)
     ax.set_aspect('equal', adjustable='box')
-    
-    # 軸の目盛りやラベルは不要なので非表示にする
     ax.tick_params(which="both", bottom=False, left=False, labelbottom=False, labelleft=False)
-
-    # Y軸の向きを反転させて、左上を(0,0)にする
     ax.invert_yaxis()
 
     for s in range(n_states):
-        # r: 行 (row), c: 列 (column)
         r, c = divmod(s, width)
+        if not policy_map[s, 0]: ax.plot([c - 0.5, c + 0.5], [r - 0.5, r - 0.5], color='k', lw=2)
+        if not policy_map[s, 1]: ax.plot([c - 0.5, c + 0.5], [r + 0.5, r + 0.5], color='k', lw=2)
+        if not policy_map[s, 2]: ax.plot([c + 0.5, c + 0.5], [r - 0.5, r + 0.5], color='k', lw=2)
+        if not policy_map[s, 3]: ax.plot([c - 0.5, c - 0.5], [r - 0.5, r + 0.5], color='k', lw=2)
 
-        # policy_map に基づいて、必要な壁だけを描画する
-        if not policy_map[s, 0]: # UPの壁 (セルの上辺)
-            ax.plot([c - 0.5, c + 0.5], [r - 0.5, r - 0.5], color='k', lw=2)
-        if not policy_map[s, 1]: # DOWNの壁 (セルの下辺)
-            ax.plot([c - 0.5, c + 0.5], [r + 0.5, r + 0.5], color='k', lw=2)
-        if not policy_map[s, 2]: # RIGHTの壁 (セルの右辺)
-            ax.plot([c + 0.5, c + 0.5], [r - 0.5, r + 0.5], color='k', lw=2)
-        if not policy_map[s, 3]: # LEFTの壁 (セルの左辺)
-            ax.plot([c - 0.5, c - 0.5], [r - 0.5, r + 0.5], color='k', lw=2)
-
-        # S, G, 方策の矢印を描画するロジックは変更なし
         if s == goal_pos:
             ax.text(c, r, 'G', ha='center', va='center', color='green', fontsize=22, weight='bold')
         elif s == 0:
             ax.text(c, r, 'S', ha='center', va='center', color='red', fontsize=18, weight='bold')
         else:
-            state_tensor = F.one_hot(torch.tensor(s, device=device), num_classes=n_states).float()
+            state_tensor = tf.one_hot(tf.constant(s), depth=n_states, dtype=tf.float32)
             valid_actions = [i for i, v in enumerate(policy_map[s]) if v]
             if not valid_actions: continue
             action_mask = valid_actions_to_mask(valid_actions, n_actions)
 
-            with torch.no_grad():
-                action_probs = policy_net(state_tensor, mask=action_mask)
-                best_action = action_probs.argmax().item()
-            
+            # モデルからlogitsを取得し、softmaxを適用して確率を計算
+            logits = policy_net(tf.expand_dims(state_tensor, 0), mask=action_mask)
+            action_probs = tf.nn.softmax(logits)
+            best_action = tf.argmax(action_probs, axis=1).numpy()[0]
+
             ax.text(c, r, action_symbols[best_action], ha='center', va='center', color='blue', fontsize=20)
 
     ax.set_title("REINFORCE Learned Policy (Grid Corrected)", fontsize=16)
@@ -283,7 +317,6 @@ def plot_policy_on_maze(
 
 
 print("\nPlotting Learned Policy:")
-# 可視化関数の呼び出し部分は変更なし
 plot_policy_on_maze(
     policy_net=policy_net_reinforce,
     policy_map=maze_policy,
@@ -291,8 +324,7 @@ plot_policy_on_maze(
     height=maze_height,
     goal_pos=exit_position,
     n_states=n_states,
-    n_actions=n_actions,
-    device=device
+    n_actions=n_actions
 )
 
 env.close()

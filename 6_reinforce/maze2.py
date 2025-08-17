@@ -71,8 +71,93 @@ class MazeEnv(gym.Env):
         if self.render_mode == "human":
             self.render()
         return observation, reward, terminated, False, info
-    def render(self): pass
-    def close(self): pass
+    #def render(self): pass
+    #def close(self): pass
+    def render(self) -> Optional[np.ndarray]:
+        if self.render_mode is None:
+            gym.logger.warn("render()を呼び出していますが、render_modeが設定されていません。")
+            return None
+        try:
+            import pygame
+        except ImportError:
+            raise gym.error.DependencyNotInstalled("pygameがインストールされていません。`pip install pygame` を実行してください。")
+
+        if self.window is None:
+            pygame.init()
+            if self.render_mode == "human":
+                pygame.display.init()
+                self.window = pygame.display.set_mode((self.window_size, self.window_size))
+            else:
+                self.window = pygame.Surface((self.window_size, self.window_size))
+        if self.clock is None:
+            self.clock = pygame.time.Clock()
+
+        canvas = pygame.Surface((self.window_size, self.window_size))
+        canvas.fill((255, 255, 255))
+
+        # ### 修正点 ###
+        # 単一のcell_sizeではなく、幅と高さで別々のセルサイズを計算する
+        cell_width = self.window_size / self.width
+        cell_height = self.window_size / self.height
+        line_width = max(1, int(min(cell_width, cell_height) * 0.05))
+
+        # 壁を描画
+        for state in range(self.num_states):
+            y, x = divmod(state, self.width)
+
+            
+            # ### 修正点 ###
+            # cell_widthとcell_heightを使って各コーナーの座標を正確に計算する
+            top_left = (x * cell_width, y * cell_height)
+            top_right = ((x + 1) * cell_width, y * cell_height)
+            bottom_left = (x * cell_width, (y + 1) * cell_height)
+            bottom_right = ((x + 1) * cell_width, (y + 1) * cell_height)
+
+
+            if not self.policy[state, self.UP]:
+                pygame.draw.line(canvas, (0, 0, 0), top_left, top_right, line_width)
+            if not self.policy[state, self.DOWN]:
+                pygame.draw.line(canvas, (0, 0, 0), bottom_left, bottom_right, line_width)
+            if not self.policy[state, self.RIGHT]:
+                pygame.draw.line(canvas, (0, 0, 0), top_right, bottom_right, line_width)
+            if not self.policy[state, self.LEFT]:
+                pygame.draw.line(canvas, (0, 0, 0), top_left, bottom_left, line_width)
+        
+        # ゴールを描画
+        goal_y, goal_x = divmod(self.exit_pos, self.width)
+        goal_center = (
+            goal_x * cell_width + cell_width * 0.5,
+            goal_y * cell_height + cell_height * 0.5,
+        )
+        pygame.draw.circle(
+            canvas, (255, 0, 0), goal_center, min(cell_width, cell_height) * 0.3
+        )
+
+        # エージェントを描画
+        if self.state is not None:
+            agent_y, agent_x = divmod(self.state, self.width)
+            agent_center = (
+                agent_x * cell_width + cell_width * 0.5,
+                agent_y * cell_height + cell_height * 0.5,
+            )
+            pygame.draw.circle(
+                canvas, (0, 0, 255), agent_center, min(cell_width, cell_height) * 0.3
+            )
+
+        if self.render_mode == "human":
+            self.window.blit(canvas, canvas.get_rect())
+            pygame.event.pump()
+            pygame.display.flip()
+            self.clock.tick(self.metadata["render_fps"])
+        else:
+            return np.transpose(np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2))
+
+    def close(self):
+        if self.window is not None:
+            pygame.display.quit()
+            pygame.quit()
+            self.window = None
+            self.clock = None
 
 
 def create_3x3_maze_policy() -> Tuple[np.ndarray, int, int]:
@@ -98,15 +183,18 @@ class PolicyNetwork(nn.Module):
         self.layer1 = nn.Linear(n_observations, 128)
         self.layer2 = nn.Linear(128, 128)
         self.layer3 = nn.Linear(128, n_actions)
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
         logits = self.layer3(x)
-        if mask is not None: logits = logits.masked_fill(~mask, -1e9)
-        return F.softmax(logits, dim=-1)
+        #if mask is not None: logits = logits.masked_fill(~mask, -1e9)
+        #return F.softmax(logits, dim=-1)
+        return logits
 
 def select_action_reinforce(state_tensor: torch.Tensor, policy_net: PolicyNetwork, action_mask: torch.Tensor) -> Tuple[int, torch.Tensor]:
-    probs = policy_net(state_tensor, mask=action_mask)
+    logits = policy_net(state_tensor)
+    if action_mask is not None: logits = logits.masked_fill(~action_mask, -1e9)
+    probs = F.softmax(logits, dim=-1)
     m = Categorical(probs)
     action = m.sample()
     return action.item(), m.log_prob(action)
