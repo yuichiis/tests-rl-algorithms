@@ -161,7 +161,7 @@ class PolicyNetwork(Model):
         return logits
 
 # ★変更点: TensorFlow/NumPyを使って収益を計算
-def calculate_discounted_returns(rewards: List[float], gamma: float, standardize: bool = True) -> tf.Tensor:
+def calculate_discounted_returns(rewards: List[float], gamma: float) -> tf.Tensor:
     n = len(rewards)
     # NumPyで計算を行い、最後にTensorFlowテンソルに変換する方が効率的
     returns = np.zeros(n, dtype=np.float32)
@@ -171,10 +171,6 @@ def calculate_discounted_returns(rewards: List[float], gamma: float, standardize
         returns[t] = discounted_return
         
     returns_tensor = tf.convert_to_tensor(returns)
-    if standardize:
-        mean = tf.math.reduce_mean(returns_tensor)
-        std = tf.math.reduce_std(returns_tensor)
-        returns_tensor = (returns_tensor - mean) / (std + 1e-8)
     return returns_tensor
 
 # ==============================================================================
@@ -254,8 +250,12 @@ for i_episode in range(NUM_EPISODES_REINFORCE):
         obs = next_obs
 
     # 割引収益を計算
-    returns = calculate_discounted_returns(episode_rewards, GAMMA_REINFORCE, STANDARDIZE_RETURNS)
-
+    returns = calculate_discounted_returns(episode_rewards, GAMMA_REINFORCE)
+    if STANDARDIZE_RETURNS:
+        mean = tf.math.reduce_mean(returns)
+        std = tf.math.reduce_std(returns)
+        returns = (returns - mean) / (std + 1e-8)
+    
     # ★変更点: TensorFlowのGradientTapeを使ってポリシーを更新
     state_tensor = tf.stack(episode_state)
     action_tensor = tf.stack(episode_action)
@@ -268,9 +268,11 @@ for i_episode in range(NUM_EPISODES_REINFORCE):
         
         m = tfp.distributions.Categorical(logits=masked_logits)
         log_prob = m.log_prob(action_tensor)
+        #print(log_prob)
         
         # 損失の計算
-        loss = -tf.reduce_sum(returns * log_prob)
+        policy_loss = returns * log_prob
+        loss = -tf.reduce_sum(policy_loss)
 
     # 勾配を計算して適用
     grads = tape.gradient(loss, policy_net_reinforce.trainable_variables)
